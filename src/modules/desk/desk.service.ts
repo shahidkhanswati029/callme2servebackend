@@ -530,13 +530,24 @@ export const deskService = {
     if (!existing) throw new AppError("Contact / complaint not found", 404, "NOT_FOUND");
 
     const status = input.status || existing.status;
+
+    let readAt: Date | null = existing.readAt;
+    if (status === "OPEN") {
+      readAt = null;
+    } else if (!readAt) {
+      readAt = new Date();
+    }
+
+    const closedAt =
+      status === "CLOSED" ? existing.closedAt || new Date() : null;
+
     const updated = await prisma.contactInquiry.update({
       where: { id },
       data: {
         status,
         deskNote: input.deskNote !== undefined ? input.deskNote : existing.deskNote,
-        readAt: status === "OPEN" ? null : existing.readAt || new Date(),
-        closedAt: status === "CLOSED" ? existing.closedAt || new Date() : null,
+        readAt,
+        closedAt,
       },
     });
     return this.contactById(updated.id);

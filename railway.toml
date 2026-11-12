@@ -1,6 +1,6 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm ci --include=dev && npm run build"
+buildCommand = "npx prisma generate && npx tsc -p tsconfig.json"
 
 [deploy]
 startCommand = "npm run start:migrate"
