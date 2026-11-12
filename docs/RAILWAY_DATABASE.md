@@ -1,38 +1,35 @@
-# Fix: `Environment variable not found: DATABASE_URL`
+# Railway Postgres: `P1001 Can't reach database server at postgres.railway.internal`
 
-Your API **build** can succeed while **start** crashes if Postgres is not linked.
+`DATABASE_URL` is present, but the API cannot open a TCP connection to Postgres.
 
-## Exact steps (Railway dashboard)
+## Checklist (do in order)
 
-1. Open your Railway **project**.
-2. If you do **not** already have Postgres:
-   - **+ New** → **Database** → **PostgreSQL**
-   - Wait until it shows **Online**.
-3. Open your **backend / API** service (the GitHub `callme2servebackend` service).
-4. Go to **Variables**.
-5. Click **+ New Variable** → **Add Reference** (or Shared Variable / Variable Reference).
-6. Choose the **PostgreSQL** service → select **`DATABASE_URL`**.
-7. Save. You should see something like:
-   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (reference syntax may vary slightly in UI)
-8. Also set these on the **same API service** (Raw values, not references):
+### 1. Same project
+- API service and PostgreSQL must be in **one** Railway project.
+- If Postgres is in another project, private host `*.railway.internal` will never work.
 
-| Variable | Value |
-|----------|--------|
-| `NODE_ENV` | `production` |
-| `JWT_ACCESS_SECRET` | long random string (32+) |
-| `JWT_REFRESH_SECRET` | different long random string |
-| `CORS_ORIGIN` | your frontend Railway URL (`https://….up.railway.app`) |
-| `COOKIE_SECURE` | `true` |
-| `DESK_ADMIN_EMAIL` | `maaali615@gmail.com` |
-| `WEBAUTHN_RP_NAME` | `CallMe2Serve` |
-| `WEBAUTHN_RP_ID` | frontend host only (no `https://`) |
-| `PAYMENTS_MODE` | `sandbox` |
+### 2. Postgres is Online
+- Open the **Postgres** service.
+- Status must be **Online**.
+- If it is provisioning, wait. If crashed, click Restart.
 
-9. **Redeploy** the API service (Deployments → Redeploy).
-10. Open `https://YOUR-API-URL/api/health` — should return OK.
+### 3. Correct variable on the API
+- Open **API** → **Variables**.
+- `DATABASE_URL` should be added via **Add Reference** → your Postgres → `DATABASE_URL`.
+- Delete any manual/local `DATABASE_URL` you typed yourself.
 
-## Do not
+### 4. Same environment
+- Project may have `production` / `staging`.
+- API and Postgres must share the **same environment**.
 
-- Put `.env` from your laptop into Railway with `localhost` Postgres.
-- Leave `DATABASE_URL` empty hoping Prisma will invent a DB.
-- Put `DATABASE_URL` only on the Postgres service — the **API service** must have it too (via reference).
+### 5. Fallback: public URL (quick test)
+If private networking still fails:
+
+1. Postgres → **Variables** → copy **`DATABASE_PUBLIC_URL`** (or “Public Network” connection URL).
+2. API → **Variables** → set `DATABASE_URL` to that **public** value (paste raw, not reference).
+3. Redeploy API.
+
+If public URL works but private does not, keep services in the same project and switch back to the private reference later.
+
+### 6. Redeploy
+After fixing variables / Postgres status → **Redeploy** the API (do not only restart an old broken deploy).
