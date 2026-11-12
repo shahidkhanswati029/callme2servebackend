@@ -1,6 +1,8 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "npx prisma generate && npx tsc -p tsconfig.json"
+# Install already ran `npm ci --include=dev`. Never run npm ci again here —
+# Railway mounts node_modules/.cache and a second ci hits EBUSY.
+buildCommand = "npm run build"
 
 [deploy]
 startCommand = "npm run start:railway"

@@ -5,7 +5,8 @@ nixPkgs = ["nodejs_20", "openssl"]
 cmds = ["npm ci --include=dev"]
 
 [phases.build]
-cmds = ["npx prisma generate", "npx tsc -p tsconfig.json"]
+# Do not run npm ci here — only compile.
+cmds = ["npm run build"]
 
 [start]
-cmd = "npm run start:migrate"
+cmd = "npm run start:railway"
