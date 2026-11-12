@@ -2,10 +2,11 @@
 nixPkgs = ["nodejs_20", "openssl"]
 
 [phases.install]
-cmds = ["npm ci"]
+# Include build tools even when NODE_ENV=production (Railway).
+cmds = ["npm ci --include=dev"]
 
 [phases.build]
-cmds = ["npx prisma generate", "npm run build"]
+cmds = ["npm run build"]
 
 [start]
 cmd = "npm run start:migrate"
