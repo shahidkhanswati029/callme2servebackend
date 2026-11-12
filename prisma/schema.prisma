@@ -1,0 +1,439 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Seat {
+  EXPERT
+  DESK
+}
+
+enum PackageTier {
+  FREE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+enum ShopStatus {
+  HELD
+  LIVE
+}
+
+enum MessageKind {
+  TEXT
+  IMAGE
+  VIDEO
+  VOICE
+}
+
+enum NotificationKind {
+  CHAT
+  ALARM
+  SYSTEM
+  JOB
+}
+
+enum PaymentRail {
+  JAZZCASH
+  EASYPAISA
+  GOOGLE_PAY
+  PAYPAL
+  CASH
+  DEBIT_CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  REQUIRES_ACTION
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum PaymentPurpose {
+  PACKAGE
+  JOB
+  PAYOUT
+}
+
+enum LedgerKind {
+  QUOTATION
+  VISIT_FEE
+  COMMISSION
+  REFERRAL_SHARE
+  NET_PAYOUT
+  PACKAGE_FEE
+  PAYOUT_RELEASE
+}
+
+enum JobStatus {
+  OPEN
+  ACCEPTED
+  COMPLETED
+  CANCELLED
+}
+
+model Account {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String?
+  name         String
+  phone        String?
+  city         String?
+  work         String?
+  languages    String[]    @default([])
+  uiLanguage   String      @default("en")
+  country      String      @default("PK")
+  currency     String      @default("PKR")
+  package      PackageTier @default(FREE)
+  seat         Seat        @default(EXPERT)
+
+  placeLabel       String?
+  photoUrl         String?
+  payoutAccountSet Boolean @default(false)
+  payoutRail       PaymentRail?
+  payoutLast4      String?
+  payoutToken      String?
+  rating           Float   @default(0)
+  ratingCount      Int     @default(0)
+
+  latitude       Float?
+  longitude      Float?
+  placeAccuracyM Float?
+  placeUpdatedAt DateTime?
+
+  isOnline   Boolean   @default(false)
+  lastSeenAt DateTime?
+
+  googleId   String? @unique
+  facebookId String? @unique
+
+  fingerprintEnrolled Boolean @default(false)
+  faceEnrolled        Boolean @default(false)
+
+  referralCode     String?   @unique
+  referredById     String?
+  referredBy       Account?  @relation("Referrals", fields: [referredById], references: [id])
+  referralsMade    Account[] @relation("Referrals")
+  referralJoinedAt DateTime?
+
+  refreshTokenHash String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  webauthnCredentials WebAuthnCredential[]
+  shops               Shop[]
+  conversationsA      Conversation[]       @relation("ConvA")
+  conversationsB      Conversation[]       @relation("ConvB")
+  messagesSent        Message[]
+  notifications       Notification[]
+  pushTokens          PushToken[]
+  jobsAsAsker         Job[]                @relation("JobAsker")
+  jobsAsWorker        Job[]                @relation("JobWorker")
+  ledgerLines         LedgerLine[]
+  referralLinks       Referral[]           @relation("ReferrerLinks")
+  referredAs          Referral?            @relation("ReferredExpert")
+  ratingsGiven         Rating[]              @relation("RatingsFrom")
+  ratingsReceived      Rating[]              @relation("RatingsTo")
+  paymentTransactions  PaymentTransaction[]
+
+  @@map("accounts")
+}
+
+/// Stars + optional text; who rated whom. Job link optional (plan record).
+model Rating {
+  id        String   @id @default(cuid())
+  fromId    String
+  from      Account  @relation("RatingsFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toId      String
+  to        Account  @relation("RatingsTo", fields: [toId], references: [id], onDelete: Cascade)
+  stars     Int
+  text      String?
+  jobId     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([fromId, toId])
+  @@index([toId])
+  @@map("ratings")
+}
+
+model Referral {
+  id           String   @id @default(cuid())
+  referrerId   String
+  referrer     Account  @relation("ReferrerLinks", fields: [referrerId], references: [id])
+  expertId     String   @unique
+  expert       Account  @relation("ReferredExpert", fields: [expertId], references: [id])
+  codeUsed     String
+  joinedAt     DateTime @default(now())
+  endsAt       DateTime
+  active       Boolean  @default(true)
+
+  @@index([referrerId])
+  @@map("referrals")
+}
+
+model ReferralSettings {
+  id               String @id @default("default")
+  sharePercent     Int    @default(25)
+  durationMonths   Int    @default(6)
+}
+
+model Job {
+  id            String    @id @default(cuid())
+  askerId       String
+  asker         Account   @relation("JobAsker", fields: [askerId], references: [id])
+  workerId      String
+  worker        Account   @relation("JobWorker", fields: [workerId], references: [id])
+  quotation     Float
+  visitFee      Float
+  currency      String    @default("PKR")
+  packageRate   Float
+  commission    Float
+  netToWorker   Float
+  status        JobStatus @default(OPEN)
+  rail          PaymentRail?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  ledgerLines          LedgerLine[]
+  receipt              PaymentReceipt?
+  paymentTransactions  PaymentTransaction[]
+
+  @@index([workerId])
+  @@index([askerId])
+  @@map("jobs")
+}
+
+/// Gateway payment attempt — PENDING until provider webhook confirms money moved.
+model PaymentTransaction {
+  id              String         @id @default(cuid())
+  accountId       String
+  account         Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  jobId           String?
+  job             Job?           @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  purpose         PaymentPurpose
+  rail            PaymentRail
+  provider        String
+  status          PaymentStatus  @default(PENDING)
+  amount          Float
+  currency        String         @default("PKR")
+  providerRef     String?
+  checkoutUrl     String?
+  clientSecret    String?
+  packageTier     String?
+  metadata        Json           @default("{}")
+  failureReason   String?
+  paidAt          DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([accountId, createdAt])
+  @@index([providerRef])
+  @@index([status])
+  @@index([jobId])
+  @@map("payment_transactions")
+}
+
+/// Real job receipt after pay — quote, visit fee, commission, net, rail (plan SVG frame 07).
+model PaymentReceipt {
+  id           String      @id @default(cuid())
+  receiptNo    String      @unique
+  jobId        String      @unique
+  job          Job         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  askerId      String
+  workerId     String
+  askerName    String
+  workerName   String
+  quotation    Float
+  visitFee     Float
+  total        Float
+  packageRate  Float
+  commission   Float
+  netToWorker  Float
+  currency     String      @default("PKR")
+  rail         PaymentRail
+  payNote      String?
+  packageTier  String?
+  createdAt    DateTime    @default(now())
+
+  @@index([askerId])
+  @@index([workerId])
+  @@index([createdAt])
+  @@map("payment_receipts")
+}
+
+model LedgerLine {
+  id          String      @id @default(cuid())
+  accountId   String?
+  account     Account?    @relation(fields: [accountId], references: [id])
+  jobId       String?
+  job         Job?        @relation(fields: [jobId], references: [id])
+  kind        LedgerKind
+  rail        PaymentRail?
+  amount      Float
+  currency    String      @default("PKR")
+  note        String?
+  createdAt   DateTime    @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([jobId])
+  @@map("ledger_lines")
+}
+
+model WebAuthnCredential {
+  id           String   @id @default(cuid())
+  accountId    String
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  credentialId String   @unique
+  publicKey    Bytes
+  counter      BigInt
+  transports   String[] @default([])
+  deviceType   String   @default("platform")
+  backedUp     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([accountId])
+  @@map("webauthn_credentials")
+}
+
+model Shop {
+  id             String     @id @default(cuid())
+  ownerId        String
+  owner          Account    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  type           String
+  name           String
+  typeFields     Json       @default("{}")
+  street         String?
+  latitude       Float?
+  longitude      Float?
+  accuracyM      Float?
+  pointUpdatedAt DateTime?
+  doorPhotoUrl   String?
+  status         ShopStatus @default(HELD)
+  heldReason     String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([ownerId])
+  @@index([status])
+  @@map("shops")
+}
+
+/// Direct expert inbox (jobId optional later). No phone numbers in thread.
+model Conversation {
+  id            String    @id @default(cuid())
+  participantAId String
+  participantBId String
+  participantA  Account   @relation("ConvA", fields: [participantAId], references: [id], onDelete: Cascade)
+  participantB  Account   @relation("ConvB", fields: [participantBId], references: [id], onDelete: Cascade)
+  jobId         String?
+  lastMessageAt DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  messages      Message[]
+
+  @@unique([participantAId, participantBId])
+  @@index([participantAId])
+  @@index([participantBId])
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         Account      @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  kind           MessageKind  @default(TEXT)
+  body           String?
+  mediaUrl       String?
+  mediaDurationS Float?
+  createdAt      DateTime     @default(now())
+  readAt         DateTime?
+  deletedAt      DateTime?
+  hides          MessageHide[]
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+/// Delete for me — message stays for the other person.
+model MessageHide {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  accountId String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, accountId])
+  @@index([accountId])
+  @@map("message_hides")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  accountId String
+  account   Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  kind      NotificationKind
+  title     String
+  body      String
+  data      Json             @default("{}")
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([accountId, createdAt])
+  @@map("notifications")
+}
+
+model PushToken {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  language  String   @default("en")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@map("push_tokens")
+}
+
+enum ContactKind {
+  CONTACT
+  COMPLAINT
+}
+
+enum ContactStatus {
+  OPEN
+  READ
+  IN_PROGRESS
+  CLOSED
+}
+
+/// Landing /contact messages for the desk (CallMe2Serve Support / Complaints board).
+model ContactInquiry {
+  id        String        @id @default(cuid())
+  kind      ContactKind   @default(CONTACT)
+  status    ContactStatus @default(OPEN)
+  name      String
+  email     String
+  city      String?
+  country   String?
+  subject   String?
+  message   String
+  deskNote  String?
+  readAt    DateTime?
+  closedAt  DateTime?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([status, createdAt])
+  @@index([kind, createdAt])
+  @@index([email])
+  @@map("contact_inquiries")
+}
