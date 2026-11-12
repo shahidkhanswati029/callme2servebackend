@@ -1,8 +1,7 @@
 /**
  * Railway / production entry:
- * 1) Validate required env
- * 2) prisma db push (retries + optional public URL fallback)
- * 3) start Express on 0.0.0.0
+ * Prefer DATABASE_PUBLIC_URL when present (avoids broken *.railway.internal DNS),
+ * then prisma db push with retries, then start API.
  */
 import { spawnSync } from "node:child_process";
 
@@ -49,28 +48,36 @@ if (missing.length > 0) {
     [
       `Missing required environment variable(s): ${missing.join(", ")}`,
       "",
-      "On Railway:",
-      "1) Same project → + New → Database → PostgreSQL",
-      "2) API service → Variables → Add Reference → Postgres → DATABASE_URL",
-      "3) Also Add Reference → DATABASE_PUBLIC_URL (recommended fallback)",
-      "4) Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET",
-      "5) Redeploy API",
+      "Railway API service → Variables:",
+      "- Add Reference: Postgres DATABASE_URL",
+      "- Add Reference: Postgres DATABASE_PUBLIC_URL  (required if private DNS fails)",
+      "- JWT_ACCESS_SECRET / JWT_REFRESH_SECRET",
     ].join("\n"),
   );
 }
 
-console.log("DATABASE_URL is set.");
-if (String(process.env.DATABASE_URL).includes("railway.internal")) {
-  console.log("Private host detected (*.railway.internal).");
+// Prefer public URL when available — private host often fails until networking is perfect.
+const publicUrl = String(process.env.DATABASE_PUBLIC_URL || "").trim();
+const privateUrl = String(process.env.DATABASE_URL || "").trim();
+
+if (publicUrl) {
+  console.log("Using DATABASE_PUBLIC_URL (recommended on Railway when private DNS fails).");
+  process.env.DATABASE_URL = publicUrl;
+} else if (privateUrl.includes("railway.internal")) {
+  console.warn(
+    "DATABASE_URL uses *.railway.internal and DATABASE_PUBLIC_URL is not set.",
+  );
+  console.warn(
+    "Add Reference DATABASE_PUBLIC_URL on the API service, or paste the public URL into DATABASE_URL.",
+  );
 }
 
-let ok = tryPushWithRetries("DATABASE_URL", 8);
+let ok = tryPushWithRetries(publicUrl ? "DATABASE_PUBLIC_URL" : "DATABASE_URL", 10);
 
-// Railway private DNS sometimes fails; public URL works across the edge.
-if (!ok && process.env.DATABASE_PUBLIC_URL) {
-  console.warn("Private DATABASE_URL failed. Falling back to DATABASE_PUBLIC_URL…");
-  process.env.DATABASE_URL = process.env.DATABASE_PUBLIC_URL;
-  ok = tryPushWithRetries("DATABASE_PUBLIC_URL", 6);
+if (!ok && publicUrl && privateUrl && privateUrl !== publicUrl) {
+  console.warn("Public URL failed; trying original DATABASE_URL…");
+  process.env.DATABASE_URL = privateUrl;
+  ok = tryPushWithRetries("DATABASE_URL", 4);
 }
 
 if (!ok) {
@@ -78,15 +85,12 @@ if (!ok) {
     [
       "Cannot reach Postgres (P1001).",
       "",
-      "Do this in Railway:",
-      "1) Postgres service must be Online in the SAME project as the API.",
-      "2) API Variables → Add Reference for BOTH:",
-      "   - DATABASE_URL",
-      "   - DATABASE_PUBLIC_URL",
-      "3) Or paste Postgres DATABASE_PUBLIC_URL into API DATABASE_URL as a raw value.",
-      "4) Redeploy the API.",
-      "",
-      "Until the DB is reachable, Railway will show 'Application failed to respond' / 502.",
+      "Do exactly this:",
+      "1) Postgres service → Variables → copy DATABASE_PUBLIC_URL",
+      "2) API service → Variables → set DATABASE_URL = that copied public URL (paste raw)",
+      "3) Also add DATABASE_PUBLIC_URL reference if you want",
+      "4) Confirm Postgres is Online",
+      "5) Redeploy API",
     ].join("\n"),
   );
 }
