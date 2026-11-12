@@ -535,10 +535,7 @@ export const deskService = {
       data: {
         status,
         deskNote: input.deskNote !== undefined ? input.deskNote : existing.deskNote,
-        readAt:
-          status === "OPEN"
-            ? null
-            : existing.readAt || (status !== "OPEN" ? new Date() : existing.readAt),
+        readAt: status === "OPEN" ? null : existing.readAt || new Date(),
         closedAt: status === "CLOSED" ? existing.closedAt || new Date() : null,
       },
     });
