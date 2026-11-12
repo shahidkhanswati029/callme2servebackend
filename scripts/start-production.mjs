@@ -1,6 +1,7 @@
 /**
- * Railway / production entry:
- * Validate DATABASE_URL, prefer public URL when valid, prisma db push, start API.
+ * Railway / production entry.
+ * Builds a valid DATABASE_URL from discrete PG* vars when needed,
+ * then prisma db push + start API.
  */
 import { spawnSync } from "node:child_process";
 
@@ -27,30 +28,56 @@ function redactUrl(url) {
   }
 }
 
-/** Returns null if OK, otherwise an error string. Never logs secrets. */
+function looksLikeTemplate(value) {
+  return /\$\{\{|\}\}/.test(String(value || ""));
+}
+
 function validateDatabaseUrl(raw) {
   const url = String(raw || "").trim();
   if (!url) return "DATABASE_URL is empty.";
+  if (looksLikeTemplate(url)) {
+    return "DATABASE_URL still contains unresolved ${{ }} template parts.";
+  }
   if (!/^postgres(ql)?:\/\//i.test(url)) {
     return "DATABASE_URL must start with postgresql:// or postgres://";
   }
-  // Common Railway mistake: pasted variable name or broken reference
-  if (url.includes("${{") || url.includes("PGHOST") || url === "DATABASE_URL") {
-    return "DATABASE_URL looks like a template/name, not a real connection string.";
-  }
   try {
     const u = new URL(url);
-    if (!u.hostname) {
-      return "DATABASE_URL has an empty host. Example: postgresql://USER:PASSWORD@HOST:PORT/DATABASE";
-    }
-    if (u.hostname === "postgres.railway.internal") {
-      // allowed but warn — caller may prefer public
-      return null;
-    }
+    if (!u.hostname) return "DATABASE_URL has an empty host.";
     return null;
   } catch {
-    return "DATABASE_URL could not be parsed. If the password has @ # % etc, URL-encode it.";
+    return "DATABASE_URL could not be parsed. URL-encode special password characters.";
   }
+}
+
+function buildUrlFromParts() {
+  const user = String(process.env.PGUSER || process.env.POSTGRES_USER || "").trim();
+  const password = String(process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD || "").trim();
+  const host = String(
+    process.env.RAILWAY_TCP_PROXY_DOMAIN ||
+      process.env.PGHOST_PUBLIC ||
+      process.env.PGHOST ||
+      "",
+  ).trim();
+  const port = String(
+    process.env.RAILWAY_TCP_PROXY_PORT || process.env.PGPORT || "5432",
+  ).trim();
+  const database = String(
+    process.env.PGDATABASE || process.env.POSTGRES_DB || process.env.POSTGRES_DATABASE || "railway",
+  ).trim();
+
+  if (!user || !password || !host) return null;
+  if (looksLikeTemplate(user) || looksLikeTemplate(password) || looksLikeTemplate(host)) {
+    return null;
+  }
+  // Prefer public proxy host when available.
+  if (host.includes("railway.internal") && !process.env.RAILWAY_TCP_PROXY_DOMAIN) {
+    console.warn("PGHOST is private (*.railway.internal). Prefer RAILWAY_TCP_PROXY_DOMAIN.");
+  }
+
+  const encUser = encodeURIComponent(user);
+  const encPass = encodeURIComponent(password);
+  return `postgresql://${encUser}:${encPass}@${host}:${port}/${encodeURIComponent(database)}`;
 }
 
 function runPrismaPush() {
@@ -69,72 +96,78 @@ function tryPushWithRetries(label, attempts) {
     const push = runPrismaPush();
     if (push.status === 0) return true;
     if (attempt < attempts) {
-      console.warn("Database not ready / URL rejected. Waiting 5s…");
+      console.warn("Database not ready / rejected. Waiting 5s…");
       sleep(5000);
     }
   }
   return false;
 }
 
-const required = ["DATABASE_URL", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
-const missing = required.filter((key) => !String(process.env[key] || "").trim());
-if (missing.length > 0) {
-  fail(`Missing required environment variable(s): ${missing.join(", ")}`);
-}
-
-const publicUrl = String(process.env.DATABASE_PUBLIC_URL || "").trim();
-const privateUrl = String(process.env.DATABASE_URL || "").trim();
-
-// Prefer public URL only if it is a valid non-empty host URL.
-let chosen = privateUrl;
-let label = "DATABASE_URL";
-if (publicUrl) {
-  const publicErr = validateDatabaseUrl(publicUrl);
-  if (!publicErr) {
-    chosen = publicUrl;
-    label = "DATABASE_PUBLIC_URL";
-  } else {
-    console.warn(`Ignoring DATABASE_PUBLIC_URL: ${publicErr}`);
+for (const key of ["JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"]) {
+  if (!String(process.env[key] || "").trim()) {
+    fail(`Missing required environment variable: ${key}`);
   }
 }
 
-const chosenErr = validateDatabaseUrl(chosen);
-if (chosenErr) {
+const candidates = [];
+
+// 1) Explicit public URL
+const publicUrl = String(process.env.DATABASE_PUBLIC_URL || "").trim();
+if (publicUrl && !validateDatabaseUrl(publicUrl)) {
+  candidates.push({ label: "DATABASE_PUBLIC_URL", url: publicUrl });
+}
+
+// 2) Built from discrete PG* / proxy vars (best for users who linked each field)
+const built = buildUrlFromParts();
+if (built && !validateDatabaseUrl(built)) {
+  candidates.push({ label: "built from PGUSER/PGPASSWORD/HOST/PORT", url: built });
+}
+
+// 3) DATABASE_URL as provided
+const rawUrl = String(process.env.DATABASE_URL || "").trim();
+if (rawUrl && !validateDatabaseUrl(rawUrl)) {
+  candidates.push({ label: "DATABASE_URL", url: rawUrl });
+}
+
+if (candidates.length === 0) {
   fail(
     [
-      chosenErr,
+      "No valid database connection URL could be built.",
       "",
-      "Fix on Railway → API service → Variables:",
-      "1) Delete broken DATABASE_URL / DATABASE_PUBLIC_URL",
-      "2) Postgres → Connect → copy the Public URL (must include a host like *.proxy.rlwy.net)",
-      "3) Paste that FULL string as API DATABASE_URL (raw value)",
-      "4) Valid shape:",
+      "On Railway → API service → Variables, do ONE of these:",
+      "",
+      "A) Set DATABASE_URL to a Variable Reference:",
+      "   ${{Postgres.DATABASE_PUBLIC_URL}}",
+      "   (use your exact Postgres service name)",
+      "",
+      "B) Or Add References for these from Postgres, then redeploy:",
+      "   PGUSER, PGPASSWORD, RAILWAY_TCP_PROXY_DOMAIN, RAILWAY_TCP_PROXY_PORT, POSTGRES_DB",
+      "",
+      "C) Or paste ONE full public URL (no ${{ }} wrappers around password/username):",
       "   postgresql://postgres:PASSWORD@HOST.proxy.rlwy.net:PORT/railway",
-      "5) If password contains @ # % & etc, URL-encode those characters",
-      "6) Redeploy API",
+      "",
+      "Wrong (causes empty host):",
+      "   postgresql://${{postgres}}:${{MyPassword}}@${{RAILWAY_TCP_PROXY_DOMAIN}}...",
     ].join("\n"),
   );
 }
 
-process.env.DATABASE_URL = chosen;
-let ok = tryPushWithRetries(label, 8);
-
-if (!ok && publicUrl && chosen !== privateUrl) {
-  const privateErr = validateDatabaseUrl(privateUrl);
-  if (!privateErr) {
-    console.warn("Public URL failed; trying DATABASE_URL…");
-    process.env.DATABASE_URL = privateUrl;
-    ok = tryPushWithRetries("DATABASE_URL", 4);
+let ok = false;
+for (const candidate of candidates) {
+  process.env.DATABASE_URL = candidate.url;
+  console.log(`Trying ${candidate.label}…`);
+  if (tryPushWithRetries(candidate.label, 5)) {
+    ok = true;
+    break;
   }
 }
 
 if (!ok) {
   fail(
     [
-      "Could not sync database.",
-      "If you see P1013: DATABASE_URL is invalid (empty host / bad paste).",
-      "If you see P1001: host is unreachable (use public *.proxy.rlwy.net URL).",
-      "Paste the FULL public connection string into API DATABASE_URL, then redeploy.",
+      "Could not reach Postgres with any candidate URL.",
+      "Confirm Postgres is Online, then use DATABASE_PUBLIC_URL / proxy host.",
+      `Last tried: ${redactUrl(process.env.DATABASE_URL)}`,
     ].join("\n"),
   );
 }
