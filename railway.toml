@@ -3,8 +3,8 @@ builder = "NIXPACKS"
 buildCommand = "npx prisma generate && npx tsc -p tsconfig.json"
 
 [deploy]
-startCommand = "npm run start:migrate"
+startCommand = "npm run start:railway"
 healthcheckPath = "/api/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 5
+restartPolicyMaxRetries = 3
