@@ -1,8 +1,8 @@
 /**
  * Railway / production entry:
  * 1) Validate required env
- * 2) prisma db push (with retries — Postgres may not be ready yet)
- * 3) start Express
+ * 2) prisma db push (retries + optional public URL fallback)
+ * 3) start Express on 0.0.0.0
  */
 import { spawnSync } from "node:child_process";
 
@@ -19,6 +19,28 @@ function sleep(ms) {
   });
 }
 
+function runPrismaPush() {
+  return spawnSync("npx", ["prisma", "db", "push", "--skip-generate"], {
+    stdio: "inherit",
+    env: process.env,
+    shell: true,
+  });
+}
+
+function tryPushWithRetries(label, attempts) {
+  console.log(`Syncing Prisma schema via ${label}…`);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    console.log(`prisma db push attempt ${attempt}/${attempts}…`);
+    const push = runPrismaPush();
+    if (push.status === 0) return true;
+    if (attempt < attempts) {
+      console.warn("Database not reachable yet. Waiting 5s…");
+      sleep(5000);
+    }
+  }
+  return false;
+}
+
 const required = ["DATABASE_URL", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
 const missing = required.filter((key) => !String(process.env[key] || "").trim());
 
@@ -30,57 +52,46 @@ if (missing.length > 0) {
       "On Railway:",
       "1) Same project → + New → Database → PostgreSQL",
       "2) API service → Variables → Add Reference → Postgres → DATABASE_URL",
-      "3) Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET",
-      "4) Redeploy API",
+      "3) Also Add Reference → DATABASE_PUBLIC_URL (recommended fallback)",
+      "4) Set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET",
+      "5) Redeploy API",
     ].join("\n"),
   );
 }
 
-const dbUrl = String(process.env.DATABASE_URL);
 console.log("DATABASE_URL is set.");
-if (dbUrl.includes("railway.internal")) {
-  console.log("Using Railway private host (*.railway.internal). API and Postgres must be in the SAME project.");
+if (String(process.env.DATABASE_URL).includes("railway.internal")) {
+  console.log("Private host detected (*.railway.internal).");
 }
 
-console.log("Syncing Prisma schema (retries if DB is still starting)…");
+let ok = tryPushWithRetries("DATABASE_URL", 8);
 
-const maxAttempts = 12;
-let pushed = false;
-for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-  console.log(`prisma db push attempt ${attempt}/${maxAttempts}…`);
-  const push = spawnSync("npx", ["prisma", "db", "push", "--skip-generate"], {
-    stdio: "inherit",
-    env: process.env,
-    shell: true,
-  });
-  if (push.status === 0) {
-    pushed = true;
-    break;
-  }
-  if (attempt < maxAttempts) {
-    console.warn("Database not reachable yet. Waiting 5s…");
-    sleep(5000);
-  }
+// Railway private DNS sometimes fails; public URL works across the edge.
+if (!ok && process.env.DATABASE_PUBLIC_URL) {
+  console.warn("Private DATABASE_URL failed. Falling back to DATABASE_PUBLIC_URL…");
+  process.env.DATABASE_URL = process.env.DATABASE_PUBLIC_URL;
+  ok = tryPushWithRetries("DATABASE_PUBLIC_URL", 6);
 }
 
-if (!pushed) {
+if (!ok) {
   fail(
     [
-      "prisma db push failed after retries (P1001 = cannot reach Postgres).",
+      "Cannot reach Postgres (P1001).",
       "",
-      "Fix in Railway dashboard:",
-      "1) Open Postgres service → confirm status is Online (not Provisioning / Crashed).",
-      "2) API + Postgres must be in the SAME Railway project AND same environment.",
-      "3) API Variables → DATABASE_URL must be a Reference to that Postgres service",
-      "   (not a copied localhost URL, not a URL from another project).",
-      "4) If private networking fails, temporarily set DATABASE_URL to the Postgres",
-      "   public URL (Postgres → Variables → DATABASE_PUBLIC_URL), then redeploy.",
-      "5) Settings → restart Postgres, then Redeploy the API.",
+      "Do this in Railway:",
+      "1) Postgres service must be Online in the SAME project as the API.",
+      "2) API Variables → Add Reference for BOTH:",
+      "   - DATABASE_URL",
+      "   - DATABASE_PUBLIC_URL",
+      "3) Or paste Postgres DATABASE_PUBLIC_URL into API DATABASE_URL as a raw value.",
+      "4) Redeploy the API.",
+      "",
+      "Until the DB is reachable, Railway will show 'Application failed to respond' / 502.",
     ].join("\n"),
   );
 }
 
-console.log("Schema synced. Starting API…");
+console.log("Schema synced. Starting API on 0.0.0.0…");
 const server = spawnSync("node", ["dist/server.js"], {
   stdio: "inherit",
   env: process.env,
